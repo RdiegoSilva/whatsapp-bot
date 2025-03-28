@@ -3,5 +3,8 @@ services:
     name: whatsapp-bot
     env: node
     buildCommand: npm install
-    startCommand: node index.js
+    startCommand: npm start
     healthCheckPath: /
+    envVars:
+      - key: NODE_ENV
+        value: production

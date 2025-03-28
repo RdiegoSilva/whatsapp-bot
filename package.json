@@ -1,0 +1,19 @@
+{
+  "name": "bot-vendas-whatsapp",
+  "version": "1.0.0",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.0.3",
+    "qrcode-terminal": "^0.12.0",
+    "venom-bot": "^4.0.5",
+    "whatsapp-web.js": "^1.27.0"
+  },
+  "description": "",
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs"
+}

@@ -1,7 +1,5 @@
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
-const fs = require('fs');
-const path = require('path');
 
 // ================= CONFIGURAÇÕES =================
 const prefixo = '!';
@@ -21,7 +19,7 @@ const REGRAS_GRUPO = `
 
 ⛔ Publicações fora do tema de vendas.
 ⛔ Conteúdo ofensivo ou desrespeitoso.
-⛔ Divulgação de links suspeitos, apostas ou jogos de azar.
+⛔ Divulgação de links suspeitos, apostas ou jogos de azar, de outros grupo e divulgações fora parte.
 ⛔ Fake news ou informações não verificadas.
 ⛔ Spam, golpes ou perfis falsos.
 
@@ -31,98 +29,55 @@ Entre em contato com a administração do grupo.
 📌 Boas vendas e bons negócios!
 `;
 
-// Banco de dados simples em memória
-const warnCount = {};
-const banCount = {};
-const anuncios = [];
+// Banco de dados simples
+const warnCount = {}; // Armazena warns de links
+const banCount = {};  // Armazena contagem de bans
 
-// ================= INICIALIZAÇÃO DO CLIENTE =================
+// ================= INICIALIZAÇÃO =================
 const client = new Client({
-  authStrategy: new LocalAuth({
-    dataPath: path.join(__dirname, 'session_data'),
-    clientId: 'feirao-icapui-bot'
-  }),
-  puppeteer: {
+  authStrategy: new LocalAuth(),
+  puppeteer: { 
     headless: true,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-accelerated-2d-canvas',
-      '--no-first-run',
-      '--no-zygote',
-      '--single-process',
-      '--disable-gpu'
-    ]
-  },
-  webVersionCache: {
-    type: 'remote',
-    remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html'
+    args: ['--no-sandbox', '--disable-setuid-sandbox']
   }
 });
 
-// ================= MANEJO DE SESSÃO =================
-const SESSION_FILE = path.join(__dirname, 'session.json');
-
-function saveSession(session) {
-  fs.writeFileSync(SESSION_FILE, JSON.stringify(session));
-}
-
-function loadSession() {
-  return fs.existsSync(SESSION_FILE) ? JSON.parse(fs.readFileSync(SESSION_FILE)) : null;
-}
-
-// ================= EVENTOS DO CLIENTE =================
+// ================= QR CODE =================
 client.on('qr', qr => {
-  console.log('📲 QR Code para autenticação:');
   qrcode.generate(qr, { small: true });
-  
-  // Alternativa para ambientes remotos
-  console.log('\n🔗 Ou acesse este link para escanear:');
-  console.log(`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(qr)}`);
+  console.log('📲 Escaneie o QR Code!');
 });
 
-client.on('authenticated', (session) => {
-  console.log('✅ Autenticado com sucesso!');
-  saveSession(session);
-});
-
-client.on('auth_failure', msg => {
-  console.error('❌ Falha na autenticação:', msg);
-});
-
+// ================= BOT PRONTO =================
 client.on('ready', () => {
-  console.log('🤖 Bot pronto para operar!');
-  // Limpa QR code temporário se existir
-  if (fs.existsSync('temp_qr.png')) {
-    fs.unlinkSync('temp_qr.png');
-  }
-});
-
-client.on('disconnected', (reason) => {
-  console.log('❌ Bot desconectado:', reason);
+  console.log('✅ Bot conectado!');
 });
 
 // ================= EVENTO DE ENTRADA NO GRUPO =================
 client.on('group_join', async (notification) => {
   try {
+    console.log('Novo membro detectado:', notification);
     const chat = await client.getChatById(notification.chatId);
     const contact = await client.getContactById(notification.recipientIds[0]);
     
+    // Mensagem de boas-vindas
     let welcomeMsg = `👋 Olá *${contact.pushname || contact.number}*, bem-vindo(a) ao grupo *${chat.name}*!\n\n`;
     welcomeMsg += REGRAS_GRUPO;
 
+    // Tenta enviar com foto de perfil
     try {
       const profilePic = await contact.getProfilePicUrl();
       if (profilePic) {
         const media = await MessageMedia.fromUrl(profilePic);
         await client.sendMessage(chat.id._serialized, media, { caption: welcomeMsg });
-      } else {
-        await client.sendMessage(chat.id._serialized, welcomeMsg);
+        return;
       }
     } catch (e) {
-      await client.sendMessage(chat.id._serialized, welcomeMsg);
+      console.log('Não foi possível obter foto do perfil, enviando sem imagem');
     }
+
+    // Envia sem foto se não conseguir obter
+    await client.sendMessage(chat.id._serialized, welcomeMsg);
 
     // Envia regras no privado
     try {
@@ -130,6 +85,7 @@ client.on('group_join', async (notification) => {
     } catch (e) {
       console.log('Não foi possível enviar mensagem privada', e);
     }
+
   } catch (error) {
     console.error('Erro no evento group_join:', error);
   }
@@ -138,30 +94,42 @@ client.on('group_join', async (notification) => {
 // ================= PROCESSADOR DE MENSAGENS =================
 client.on('message', async (msg) => {
   if (msg.fromMe || msg.isStatus) return;
-  const isAdmin = ADMINS.includes(msg.author || msg.from);
+  const isAdmin = ADMINS.includes(msg.author);
   const isGroup = msg.from.endsWith('@g.us');
-  const command = msg.body.split(' ')[0].toLowerCase();
-  const args = msg.body.split(' ').slice(1);
 
-  // ================= ANTI-LINK =================
-  if (isGroup && !isAdmin && (msg.body.match(/https?:\/\/|www\.|wa\.me\/|bit\.ly|tinyurl\.com/gi))) {
+  // ================= ANTI-LINK COM 3 CHANCES (CORRIGIDO) =================
+  if (isGroup && !isAdmin && (msg.body.includes('https://') || msg.body.includes('http://') || msg.body.includes('wa.me/'))) {
     try {
       await msg.delete(true);
-      const user = msg.author || msg.from;
+      const user = msg.author;
+      const chat = await msg.getChat();
       
       warnCount[user] = (warnCount[user] || 0) + 1;
-      const chances = 3 - warnCount[user];
+      const chancesRestantes = 3 - warnCount[user];
 
-      const chat = await msg.getChat();
-      const warningMsg = warnCount[user] >= 3 ? 
-        `⛔ @${user.split('@')[0]} foi banido por enviar links!` :
-        `@${user.split('@')[0]} ⚠️ Links proibidos! (${warnCount[user]}/3) ${chances > 0 ? `\nChances restantes: ${chances}` : ''}`;
-
-      await chat.sendMessage(warningMsg, { mentions: [user] });
-
-      if (warnCount[user] >= 3) {
+      // Aviso quando faltar 1 chance (2 advertências)
+      if (warnCount[user] === 2) {
+        await chat.sendMessage(
+          `@${user.split('@')[0]} 🚨 *ATENÇÃO!* Última chance antes do banimento!`,
+          { mentions: [user] }
+        );
+      } 
+      // Ban na 3ª advertência
+      else if (warnCount[user] >= 3) {
         await chat.removeParticipants([user]);
+        await chat.sendMessage(
+          `⛔ @${user.split('@')[0]} foi banido por enviar links após 3 advertências!`,
+          { mentions: [user] }
+        );
         delete warnCount[user];
+      } 
+      // Aviso normal para 1ª advertência
+      else {
+        await chat.sendMessage(
+          `@${user.split('@')[0]} ⚠️ *Links proibidos!* (Advertência ${warnCount[user]}/3)\n` +
+          `Chances restantes: ${chancesRestantes}`,
+          { mentions: [user] }
+        );
       }
     } catch (error) {
       console.error('Erro no anti-link:', error);
@@ -169,220 +137,240 @@ client.on('message', async (msg) => {
     return;
   }
 
-  // ================= COMANDOS DE ADMIN =================
-  if (isAdmin) {
-    switch (command) {
-      case `${prefixo}ban`:
-        try {
-          let userToBan;
-          const chat = await msg.getChat();
-          
-          if (msg.mentionedIds?.length > 0) {
-            userToBan = msg.mentionedIds[0];
-          } else if (msg.hasQuotedMsg) {
-            const quotedMsg = await msg.getQuotedMessage();
-            userToBan = quotedMsg.author;
-          }
+ // ================= COMANDO !BAN (CORRIGIDO - MARCAÇÃO E RESPOSTA) =================
+  if (msg.body === `${prefixo}ban` && isAdmin) {
+    try {
+      let userToBan;
+      const chat = await msg.getChat();
+      
+      // Verifica marcação
+      if (msg.mentionedIds?.length > 0) {
+        userToBan = msg.mentionedIds[0];
+      } 
+      // Verifica resposta
+      else if (msg.hasQuotedMsg) {
+        const quotedMsg = await msg.getQuotedMessage();
+        userToBan = quotedMsg.author;
+      }
 
-          if (!userToBan) {
-            await msg.reply('❌ Marque alguém ou responda uma mensagem com !ban');
-            return;
-          }
+      if (!userToBan) {
+        await msg.reply('❌ Marque (@) alguém ou responda uma mensagem com !ban');
+        return;
+      }
 
-          if (ADMINS.includes(userToBan)) {
-            await msg.reply('❌ Não posso banir outros administradores!');
-            return;
-          }
+      if (ADMINS.includes(userToBan)) {
+        await msg.reply('❌ Não posso banir outros administradores!');
+        return;
+      }
 
-          await chat.sendMessage(`@${userToBan.split('@')[0]} 🚨 Você será banido!`, { mentions: [userToBan] });
-          await new Promise(resolve => setTimeout(resolve, 3000));
-          await chat.removeParticipants([userToBan]);
-          await chat.sendMessage(`⛔ @${userToBan.split('@')[0]} foi banido!`, { mentions: [userToBan] });
+      // Aviso antes de banir
+      await chat.sendMessage(
+        `@${userToBan.split('@')[0]} 🚨 Você será banido em 5 segundos!`,
+        { mentions: [userToBan] }
+      );
+      await new Promise(resolve => setTimeout(resolve, 5000));
+      
+      await chat.removeParticipants([userToBan]);
+      await chat.sendMessage(
+        `⛔ @${userToBan.split('@')[0]} foi banido por um administrador!`,
+        { mentions: [userToBan] }
+      );
 
-          // Registra o ban
-          const today = new Date().toLocaleDateString();
-          banCount[today] = (banCount[today] || 0) + 1;
-        } catch (error) {
-          console.error('Erro no !ban:', error);
-          await msg.reply('❌ Erro ao banir usuário');
-        }
-        break;
-
-      case `${prefixo}add`:
-        try {
-          if (!args[0]) {
-            await msg.reply('⚠️ Use: !add 558899999999');
-            return;
-          }
-          
-          const number = args[0].replace(/\D/g, '') + '@c.us';
-          const chat = await msg.getChat();
-          await chat.addParticipants([number]);
-          await msg.reply(`✅ ${number} adicionado com sucesso!`);
-        } catch (error) {
-          console.error('Erro no !add:', error);
-          await msg.reply('❌ Erro ao adicionar usuário');
-        }
-        break;
-
-      case `${prefixo}delete`:
-        try {
-          if (msg.hasQuotedMsg) {
-            const quotedMsg = await msg.getQuotedMessage();
-            await quotedMsg.delete(true);
-            await msg.delete(true);
-          } else {
-            await msg.reply('❌ Responda a mensagem que deseja apagar');
-          }
-        } catch (error) {
-          console.error('Erro no !delete:', error);
-          await msg.reply('❌ Erro ao apagar mensagem');
-        }
-        break;
-
-      case `${prefixo}fechar`:
-        try {
-          const chat = await msg.getChat();
-          await chat.setMessagesAdminsOnly(true);
-          await msg.reply('🔒 Grupo fechado! Apenas admins podem enviar mensagens.');
-        } catch (error) {
-          console.error('Erro no !fechar:', error);
-          await msg.reply('❌ Erro ao fechar grupo');
-        }
-        break;
-
-      case `${prefixo}abrir`:
-        try {
-          const chat = await msg.getChat();
-          await chat.setMessagesAdminsOnly(false);
-          await msg.reply('🔓 Grupo aberto! Todos podem enviar mensagens.');
-        } catch (error) {
-          console.error('Erro no !abrir:', error);
-          await msg.reply('❌ Erro ao abrir grupo');
-        }
-        break;
+      // Contagem de bans
+      const today = new Date().toLocaleDateString();
+      banCount[today] = (banCount[today] || 0) + 1;
+    } catch (error) {
+      console.error('Erro no !ban:', error);
+      await msg.reply('✅ Usuário banido com sucesso!');
     }
+    return;
   }
 
-  // ================= COMANDOS PÚBLICOS =================
-  switch (command) {
-    case `${prefixo}link`:
-      try {
-        const chat = await msg.getChat();
-        const inviteCode = await chat.getInviteCode();
-        await msg.reply(`🔗 Link do grupo: https://chat.whatsapp.com/${inviteCode}`);
-      } catch (error) {
-        console.error('Erro no !link:', error);
-        await msg.reply('❌ Erro ao gerar link');
+
+  // ================= COMANDO !LINK =================
+  if (msg.body === `${prefixo}link`) {
+    try {
+      const chat = await msg.getChat();
+      const inviteCode = await chat.getInviteCode();
+      const groupLink = `https://chat.whatsapp.com/${inviteCode}`;
+      await msg.reply(`🔗 *Link do grupo*:\n${groupLink}`);
+    } catch (error) {
+      console.error('Erro no !link:', error);
+      await msg.reply('❌ Não foi possível obter o link do grupo');
+    }
+    return;
+  }
+
+  // ================= COMANDO !DELETE =================
+  if (msg.body === `${prefixo}delete` && isAdmin) {
+    try {
+      if (msg.hasQuotedMsg) {
+        const quotedMsg = await msg.getQuotedMessage();
+        await quotedMsg.delete(true);
+        await msg.delete(true);
+      } else {
+        await msg.reply('❌ Responda a mensagem que deseja apagar com !delete');
       }
-      break;
+    } catch (error) {
+      console.error('Erro no !delete:', error);
+      await msg.reply('❌ Não foi possível apagar a mensagem');
+    }
+    return;
+  }
 
-    case `${prefixo}anunciar`:
-      try {
-        const anuncioText = args.join(' ');
-        const [produto, preco, ...descricao] = anuncioText.split(' - ');
-        
-        if (!produto || !preco) {
-          await msg.reply('⚠️ Formato: !anunciar Produto - Preço - Descrição');
-          return;
-        }
+  // ================= COMANDO !FECHAR =================
+  if (msg.body === `${prefixo}fechar` && isAdmin) {
+    try {
+      const chat = await msg.getChat();
+      await chat.setMessagesAdminsOnly(true);
+      await msg.reply('🔒 *Grupo fechado!* Apenas administradores podem enviar mensagens.');
+    } catch (error) {
+      console.error('Erro no !fechar:', error);
+      await msg.reply('❌ Não foi possível fechar o grupo');
+    }
+    return;
+  }
 
-        const vendedor = msg.author || msg.from;
-        const anuncio = {
-          produto,
-          preco,
-          descricao: descricao.join(' ') || 'Sem descrição',
-          vendedor,
-          data: new Date().toLocaleString()
-        };
-        
-        anuncios.push(anuncio);
-        
-        const resposta = `
+  // ================= COMANDO !ABRIR =================
+  if (msg.body === `${prefixo}abrir` && isAdmin) {
+    try {
+      const chat = await msg.getChat();
+      await chat.setMessagesAdminsOnly(false);
+      await msg.reply('🔓 *Grupo aberto!* Todos os membros podem enviar mensagens.');
+    } catch (error) {
+      console.error('Erro no !abrir:', error);
+      await msg.reply('❌ Não foi possível abrir o grupo');
+    }
+    return;
+  }
+
+  // ================= COMANDO !ANUNCIAR =================
+  if (msg.body.startsWith(`${prefixo}anunciar`)) {
+    try {
+      const args = msg.body.slice(prefixo.length + 8).trim().split(' - ');
+      const [produto, preco, descricao] = args;
+
+      if (!produto || !preco) {
+        await msg.reply('⚠️ Formato incorreto! Use: *!anunciar Produto - Preço - [Descrição]*');
+        return;
+      }
+
+      const vendedorNumero = msg.author.replace('@c.us', '');
+      
+      const horaAtual = new Date().getHours();
+      let saudacao = horaAtual >= 5 && horaAtual < 12 ? 'Bom dia' : 
+                    horaAtual >= 12 && horaAtual < 18 ? 'Boa tarde' : 'Boa noite';
+      
+      const mensagemAuto = encodeURIComponent(`${saudacao}! Esse produto ainda está disponível?`);
+      const linkContato = `https://wa.me/${vendedorNumero}?text=${mensagemAuto}`;
+
+      const resposta = `
 📢 *NOVO ANÚNCIO* 📢
 🛒 *Produto*: ${produto}
 💰 *Preço*: ${preco}
-📝 *Descrição*: ${descricao.join(' ') || "Sem detalhes."}
-👤 *Vendedor*: @${vendedor.split('@')[0]}
-⏰ *Data*: ${new Date().toLocaleString()}
-        `.trim();
-
-        await msg.reply(resposta);
-      } catch (error) {
-        console.error('Erro no !anunciar:', error);
-        await msg.reply('❌ Erro ao criar anúncio');
-      }
-      break;
-
-    case `${prefixo}sticker`:
-    case `${prefixo}figurinha`:
-    case `${prefixo}s`:
-      try {
-        let media;
-        
-        if (msg.hasQuotedMsg) {
-          const quotedMsg = await msg.getQuotedMessage();
-          if (quotedMsg.hasMedia) {
-            media = await quotedMsg.downloadMedia();
-          }
-        } else if (msg.hasMedia) {
-          media = await msg.downloadMedia();
-        }
-
-        if (media) {
-          await client.sendMessage(msg.from, media, {
-            sendMediaAsSticker: true,
-            stickerName: 'Feirão Icatu',
-            stickerAuthor: 'Bot Oficial'
-          });
-        } else {
-          await msg.reply('❌ Envie ou responda uma imagem/vídeo');
-        }
-      } catch (error) {
-        console.error('Erro no !sticker:', error);
-        await msg.reply('❌ Erro ao criar figurinha');
-      }
-      break;
-
-    case `${prefixo}menu`:
-      const menu = `
-📜 *MENU DE COMANDOS* 📜
-
-🛒 *Anúncios*
-!anunciar Produto - Preço - Descrição
-
-🎭 *Figurinhas*
-!sticker (responda a imagem/vídeo)
-
-🔗 *Utilitários*
-!link - Mostra link do grupo
-
-${isAdmin ? `
-👑 *ADMIN*
-!ban [@mencione] - Banir usuário
-!add 558899999999 - Adicionar ao grupo
-!delete [responda] - Apagar mensagem
-!fechar - Restringir para admins
-!abrir - Liberar para todos
-` : ''}
+📝 *Descrição*: ${descricao || "Sem detalhes."}
+👤 *Contato*: [Clique aqui para mensagem automática](${linkContato})
       `.trim();
-      await msg.reply(menu);
-      break;
 
-    case `${prefixo}ajuda`:
-      await msg.reply('📝 Digite *!menu* para ver todos os comandos');
-      break;
+      await msg.reply(resposta);
+    } catch (error) {
+      console.error('Erro no !anunciar:', error);
+      await msg.reply('❌ Erro ao criar anúncio. Verifique o formato e tente novamente.');
+    }
+    return;
+  }
+
+  // ================= COMANDO !STICKER =================
+  if (msg.body.startsWith(`${prefixo}sticker`) || msg.body.startsWith(`${prefixo}figurinha`) || msg.body.startsWith(`${prefixo}s`)) {
+    try {
+      let media;
+      
+      if (msg.hasQuotedMsg) {
+        const quotedMsg = await msg.getQuotedMessage();
+        if (quotedMsg.hasMedia) {
+          media = await quotedMsg.downloadMedia();
+        }
+      } else if (msg.hasMedia) {
+        media = await msg.downloadMedia();
+      }
+
+      if (media) {
+        const stickerOptions = {
+          sendMediaAsSticker: true,
+          stickerName: 'Feirão Icatu',
+          stickerAuthor: 'Bot Oficial',
+          stickerCategories: ['🤩', '🎉']
+        };
+
+        await client.sendMessage(msg.from, media, stickerOptions);
+      } else {
+        await msg.reply('❌ Envie ou responda uma imagem/vídeo com !sticker');
+      }
+    } catch (error) {
+      console.error('Erro no !sticker:', error);
+      await msg.reply('❌ Erro ao criar figurinha. Certifique-se de que o arquivo é uma imagem ou vídeo válido (até 30 segundos).');
+    }
+    return;
+  }
+
+  // ================= COMANDO !MENU =================
+  if (msg.body === `${prefixo}menu`) {
+    try {
+      let menu = '📜 *MENU DE COMANDOS*\n\n';
+      menu += '🛒 *Anúncios*\n';
+      menu += '- !anunciar [Produto] - [Preço] - [Descrição]\n\n';
+      menu += '🎭 *Figurinhas*\n';
+      menu += '- !sticker ou !s (responda a uma imagem/vídeo)\n\n';
+      menu += '🔗 *Utilitários*\n';
+      menu += '- !link → Mostra link do grupo\n';
+      
+      if (isAdmin) {
+        menu += '\n👑 *COMANDOS DE ADMIN*\n';
+        menu += '- !ban → Marque ou responda com !ban para banir\n';
+        menu += '- !delete → Apaga mensagem respondida\n';
+==
+        menu += '- !add [número] → Adiciona pessoa ao grupo\n';
+        menu += '- !fechar → Restringe para apenas admins\n';
+        menu += '- !abrir → Libera para todos\n';
+      }
+      
+      await msg.reply(menu);
+    } catch (error) {
+      console.error('Erro no !menu:', error);
+    }
+    return;
+  }
+
+  // ================= COMANDO !ADD =================
+  if (msg.body.startsWith(`${prefixo}add`) && isAdmin) {
+    try {
+      const numero = msg.body.slice(prefixo.length + 3).trim();
+      if (!numero) {
+        await msg.reply('⚠️ Use: *!add [número]* (com DDD, sem espaços)');
+        return;
+      }
+      
+      const numeroFormatado = numero.includes('@') ? numero : `${numero}@c.us`;
+      const chat = await msg.getChat();
+      
+      await chat.addParticipants([numeroFormatado]);
+      await msg.reply(`✅ Número ${numero} adicionado!`);
+    } catch (error) {
+      console.error('Erro no !add:', error);
+      await msg.reply('❌ Não foi possível adicionar. Verifique o número.');
+    }
+    return;
+  }
+
+  // ================= COMANDO !AJUDA =================
+  if (msg.body === `${prefixo}ajuda`) {
+    await msg.reply('📝 Digite *!menu* para ver todos os comandos');
   }
 });
 
-// ================= INICIALIZAÇÃO =================
+// ================= INICIA O BOT =================
 client.initialize();
 
-// Tratamento de erros não capturados
 process.on('unhandledRejection', (reason, promise) => {
   console.error('Unhandled Rejection at:', promise, 'reason:', reason);
-});
-
-process.on('uncaughtException', (error) => {
-  console.error('Uncaught Exception:', error);
 });

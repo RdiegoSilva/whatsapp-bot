@@ -1,18 +1,9 @@
-const express = require('express');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const fs = require('fs');
 const path = require('path');
 
-// ================= CONFIGURAÇÃO DO SERVIDOR =================
-const app = express();
-const PORT = process.env.PORT || 3000;
-
-app.get('/', (req, res) => {
-  res.status(200).send('Bot do Feirão Icapui está online!');
-});
-
-// ================= CONFIGURAÇÕES DO BOT =================
+// ================= CONFIGURAÇÕES =================
 const prefixo = '!';
 const ADMINS = ['558882204383@c.us', '558881769095@c.us'];
 const REGRAS_GRUPO = `
@@ -48,7 +39,7 @@ const anuncios = [];
 // ================= INICIALIZAÇÃO DO CLIENTE =================
 const client = new Client({
   authStrategy: new LocalAuth({
-    dataPath: path.join(__dirname, 'wwebjs_auth'),
+    dataPath: path.join(__dirname, 'session_data'),
     clientId: 'feirao-icapui-bot'
   }),
   puppeteer: {
@@ -102,6 +93,10 @@ client.on('auth_failure', msg => {
 
 client.on('ready', () => {
   console.log('🤖 Bot pronto para operar!');
+  // Limpa QR code temporário se existir
+  if (fs.existsSync('temp_qr.png')) {
+    fs.unlinkSync('temp_qr.png');
+  }
 });
 
 client.on('disconnected', (reason) => {
@@ -383,12 +378,7 @@ ${isAdmin ? `
 // ================= INICIALIZAÇÃO =================
 client.initialize();
 
-// Inicia o servidor web
-app.listen(PORT, () => {
-  console.log(`Servidor rodando na porta ${PORT}`);
-});
-
-// Tratamento de erros
+// Tratamento de erros não capturados
 process.on('unhandledRejection', (reason, promise) => {
   console.error('Unhandled Rejection at:', promise, 'reason:', reason);
 });
